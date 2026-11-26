@@ -52,7 +52,7 @@
 <script>
 /*
  * Mines Solver for Dragon Story
- * Version 2026.11.25-3 (wiki)
+ * Version 2026.11.26-2 (wiki)
  *
  * Draws the solver inside <div id="mines-solver"></div> on a wiki page.
  * Does nothing on pages without that element.
@@ -69,7 +69,7 @@
   var ROWS = 7, COLS = 10;
   var COL_LABELS = 'ABCDEFGHIJ';
   var TOP_K = 6;       // how many digs the look-ahead follows at each step
-  var VERSION = '2026.11.25-3';
+  var VERSION = '2026.11.26-2';
   var SIDE_WIDTH = 170; // width of the column with suggestion + buttons
   var MIN_SIDE_CELL = 40; // side by side only if cells stay at least this big
   var MAX_CELL = 60;
@@ -83,6 +83,11 @@
     '#mines-solver *{box-sizing:border-box;}',
     '#mines-solver .ms-top{text-align:center;color:var(--ms-gold);font-weight:bold;letter-spacing:1px;margin-bottom:10px;}',
     '#mines-solver .ms-version{color:var(--ms-dim);font-weight:normal;font-size:0.8em;}',
+    // switch between the two kinds of percentages
+    '#mines-solver .ms-view{text-align:center;margin:-4px 0 10px 0;font-size:0.85em;color:var(--ms-dim);}',
+    '#mines-solver .ms-view button{padding:3px 10px;margin:0 3px;border-color:var(--ms-border);background:var(--ms-stone);color:var(--ms-dim);}',
+    '#mines-solver .ms-view button.active{border-color:var(--ms-blue);background:#0a0e1c;color:var(--ms-blue);}',
+    '#mines-solver .ms-prob.no-loot{color:#a03030;}',
     // main row: grid + side column; .stacked puts the side column under the grid
     '#mines-solver .ms-main{display:flex;gap:14px;align-items:flex-start;justify-content:center;}',
     '#mines-solver .ms-side{width:' + SIDE_WIDTH + 'px;display:flex;flex-direction:column;gap:10px;}',
@@ -150,6 +155,10 @@
   var HTML = [
     '<div class="ms-top">Loot found: <span class="ms-loot-count">0</span> ★ ',
     '<span class="ms-version">· v' + VERSION + '</span></div>',
+    '<div class="ms-view">Show: ',
+    '<button type="button" data-view="chance" title="% = chance the loot is in that cell">Loot chance</button>',
+    '<button type="button" data-view="value" title="% = how many of the possible spots a dig there rules out on average">Dig value</button>',
+    '</div>',
     '<div class="ms-main">',
     '  <div class="ms-gridbox">',
     '    <div class="ms-bg"></div><div class="ms-gridinner ms-grid"></div>',
@@ -179,8 +188,10 @@
     '    <div style="color:var(--ms-near)">~ Near — loot exactly 2 steps away</div>',
     '    <div style="color:#c04030">✗ Too Far — loot more than 2 steps away</div>',
     '    <div style="color:var(--ms-gold-light)">★ Loot found</div>',
-    '    <div style="color:var(--ms-blue)">% = chance the loot is in that cell</div>',
-    '    <div>Empty cell = the loot can\'t be there</div>',
+    '    <div class="ms-leg-chance" style="color:var(--ms-blue)">% = chance the loot is in that cell</div>',
+    '    <div class="ms-leg-chance">Empty cell = the loot can\'t be there</div>',
+    '    <div class="ms-leg-value" style="color:var(--ms-blue)">% = how many of the possible spots a dig there rules out on average</div>',
+    '    <div class="ms-leg-value" style="color:#a03030">Red % = loot can\'t be there (but digging still tells you something)</div>',
     '  </div>',
     '  <div class="ms-panel"><div class="ms-title">History</div><div class="ms-history"></div></div>',
     '  <div class="ms-panel ms-help"><div class="ms-title">How to use</div>',
@@ -222,6 +233,11 @@
     var currentRound = [];
     var lootCount = 0;
     var selected = null;
+
+    // Which percentages to show: 'chance' or 'value'. Remembered per browser
+    // (wrapped in try/catch because storage can be blocked).
+    var view = 'chance';
+    try { if (window.localStorage.getItem('minesSolverView') === 'value') view = 'value'; } catch (err) {}
 
     // ---------- Grid ----------
     var grid = $('.ms-grid');
@@ -279,6 +295,14 @@
     var clears = root.querySelectorAll('.b-clear');
     for (i = 0; i < clears.length; i++) clears[i].addEventListener('click', onClearClick);
     $('.b-reset').addEventListener('click', resetBoard);
+
+    function onViewClick(e) {
+      view = e.currentTarget.getAttribute('data-view');
+      try { window.localStorage.setItem('minesSolverView', view); } catch (err) {}
+      render(false);
+    }
+    var viewButtons = root.querySelectorAll('[data-view]');
+    for (i = 0; i < viewButtons.length; i++) viewButtons[i].addEventListener('click', onViewClick);
 
     // ---------- Pop-up menu next to a cell ----------
     var menu = $('.ms-menu');
@@ -478,17 +502,33 @@
       return {expLeft: n ? (close * close + near * near + far * far) / n : 0, hit: hit, n: n};
     }
 
+    // Dig value: share of the possible spots a dig here rules out on average
+    function cellScore(pr, pc, cands) {
+      if (!canDig(pr, pc) || cands.length === 0) return 0;
+      var e = evaluateDig(pr, pc, cands);
+      return Math.round(100 * (1 - e.expLeft / e.n));
+    }
+
     // The TOP_K digs that split the candidates best (skipping cells in `dug`).
-    function topDigs(cands, dug) {
+    function topDigs(cands, dug, withLootCells) {
       var list = [];
       for (var a = 0; a < ROWS; a++)
         for (var b = 0; b < COLS; b++) {
           if (!canDig(a, b) || dug[a * COLS + b]) continue;
           var e = evaluateDig(a, b, cands);
-          list.push({r: a, c: b, rank: e.expLeft - (e.hit ? 1e-6 : 0)});
+          list.push({r: a, c: b, hit: e.hit, rank: e.expLeft - (e.hit ? 1e-6 : 0)});
         }
       list.sort(function (x, y) { return x.rank - y.rank; });
-      return list.slice(0, TOP_K);
+      var top = list.slice(0, TOP_K);
+      // Also the best few cells where the loot can be, so they can win a tie
+      // even if they look slightly worse one step ahead
+      if (withLootCells) {
+        var added = 0;
+        for (var k = TOP_K; k < list.length && added < 3; k++) {
+          if (list[k].hit) { top.push(list[k]); added++; }
+        }
+      }
+      return top;
     }
 
     // Average digs needed if we dig p now and play well afterwards.
@@ -523,12 +563,15 @@
 
     function bestDig(cands) {
       if (cands.length === 0) return null;
-      var memo = {}, best = null, options = topDigs(cands, {});
+      var memo = {}, best = null, options = topDigs(cands, {}, true);
       for (var k = 0; k < options.length; k++) {
         var p = options[k];
         var digs = digsAfter(p, cands, {}, memo);
-        if (!best || digs < best.digs - 1e-9) {
-          var e = evaluateDig(p.r, p.c, cands);
+        var e = evaluateDig(p.r, p.c, cands);
+        // Fewer digs wins. On a tie, prefer a cell where the loot can be:
+        // same average, but a chance to find it right away.
+        var tie = best && Math.abs(digs - best.digs) < 1e-9;
+        if (!best || digs < best.digs - 1e-9 || (tie && e.hit > best.hit)) {
           best = {r: p.r, c: p.c, digs: digs, hit: e.hit, n: e.n};
         }
       }
@@ -554,16 +597,31 @@
           el.title = '';
           if (selected && selected.r === a && selected.c === b) el.className += ' selected';
           if (best && best.r === a && best.c === b) el.className += ' best';
-          // Only cells where the loot can still be get a number:
-          // the chance that the loot is there (all remaining spots are equally likely)
-          if (st === null && cands.length > 0 && isConsistentLootAt(a, b)) {
-            var prob = document.createElement('span');
-            prob.className = 'ms-prob';
-            prob.textContent = Math.round(100 / cands.length) + '%';
-            el.title = 'The loot can be here';
-            el.appendChild(prob);
+          if (st === null && cands.length > 0) {
+            var possible = isConsistentLootAt(a, b);
+            var prob = null;
+            if (view === 'chance' && possible) {
+              // chance the loot is here (all remaining spots are equally likely)
+              prob = document.createElement('span');
+              prob.className = 'ms-prob';
+              prob.textContent = Math.round(100 / cands.length) + '%';
+              el.title = 'The loot can be here';
+            } else if (view === 'value') {
+              prob = document.createElement('span');
+              prob.className = 'ms-prob' + (possible ? '' : ' no-loot');
+              prob.textContent = cellScore(a, b, cands) + '%';
+              el.title = possible ? 'The loot can be here' : 'No loot possible here (digging still gives information)';
+            }
+            if (prob) el.appendChild(prob);
           }
         }
+
+      var k2, vb = root.querySelectorAll('[data-view]');
+      for (k2 = 0; k2 < vb.length; k2++)
+        vb[k2].className = vb[k2].getAttribute('data-view') === view ? 'active' : '';
+      var legC = root.querySelectorAll('.ms-leg-chance'), legV = root.querySelectorAll('.ms-leg-value');
+      for (k2 = 0; k2 < legC.length; k2++) legC[k2].style.display = view === 'chance' ? '' : 'none';
+      for (k2 = 0; k2 < legV.length; k2++) legV[k2].style.display = view === 'value' ? '' : 'none';
 
       $('.ms-addr').textContent = selected ? addr(selected.r, selected.c) : '— click a cell —';
       $('.ms-loot-count').textContent = String(lootCount);
