@@ -52,7 +52,7 @@
 <script>
 /*
  * Mines Solver for Dragon Story
- * Version 2026.11.26-2 (wiki)
+ * Version 2026.11.26-3 (wiki)
  *
  * Draws the solver inside <div id="mines-solver"></div> on a wiki page.
  * Does nothing on pages without that element.
@@ -69,7 +69,7 @@
   var ROWS = 7, COLS = 10;
   var COL_LABELS = 'ABCDEFGHIJ';
   var TOP_K = 6;       // how many digs the look-ahead follows at each step
-  var VERSION = '2026.11.26-2';
+  var VERSION = '2026.11.26-3';
   var SIDE_WIDTH = 170; // width of the column with suggestion + buttons
   var MIN_SIDE_CELL = 40; // side by side only if cells stay at least this big
   var MAX_CELL = 60;
@@ -87,7 +87,6 @@
     '#mines-solver .ms-view{text-align:center;margin:-4px 0 10px 0;font-size:0.85em;color:var(--ms-dim);}',
     '#mines-solver .ms-view button{padding:3px 10px;margin:0 3px;border-color:var(--ms-border);background:var(--ms-stone);color:var(--ms-dim);}',
     '#mines-solver .ms-view button.active{border-color:var(--ms-blue);background:#0a0e1c;color:var(--ms-blue);}',
-    '#mines-solver .ms-prob.no-loot{color:#a03030;}',
     // main row: grid + side column; .stacked puts the side column under the grid
     '#mines-solver .ms-main{display:flex;gap:14px;align-items:flex-start;justify-content:center;}',
     '#mines-solver .ms-side{width:' + SIDE_WIDTH + 'px;display:flex;flex-direction:column;gap:10px;}',
@@ -157,7 +156,7 @@
     '<span class="ms-version">· v' + VERSION + '</span></div>',
     '<div class="ms-view">Show: ',
     '<button type="button" data-view="chance" title="% = chance the loot is in that cell">Loot chance</button>',
-    '<button type="button" data-view="value" title="% = how many of the possible spots a dig there rules out on average">Dig value</button>',
+    '<button type="button" data-view="value" title="% = how many of the possible spots a dig there rules out on average (only on cells where the loot can be)">Dig value</button>',
     '</div>',
     '<div class="ms-main">',
     '  <div class="ms-gridbox">',
@@ -191,7 +190,7 @@
     '    <div class="ms-leg-chance" style="color:var(--ms-blue)">% = chance the loot is in that cell</div>',
     '    <div class="ms-leg-chance">Empty cell = the loot can\'t be there</div>',
     '    <div class="ms-leg-value" style="color:var(--ms-blue)">% = how many of the possible spots a dig there rules out on average</div>',
-    '    <div class="ms-leg-value" style="color:#a03030">Red % = loot can\'t be there (but digging still tells you something)</div>',
+    '    <div class="ms-leg-value">Empty cell = the loot can\'t be there</div>',
     '  </div>',
     '  <div class="ms-panel"><div class="ms-title">History</div><div class="ms-history"></div></div>',
     '  <div class="ms-panel ms-help"><div class="ms-title">How to use</div>',
@@ -606,11 +605,13 @@
               prob.className = 'ms-prob';
               prob.textContent = Math.round(100 / cands.length) + '%';
               el.title = 'The loot can be here';
-            } else if (view === 'value') {
+            } else if (view === 'value' && possible) {
+              // Only cells where the loot can be: digging anywhere else uses up
+              // a move without any chance of loot, and is never the better dig
               prob = document.createElement('span');
-              prob.className = 'ms-prob' + (possible ? '' : ' no-loot');
+              prob.className = 'ms-prob';
               prob.textContent = cellScore(a, b, cands) + '%';
-              el.title = possible ? 'The loot can be here' : 'No loot possible here (digging still gives information)';
+              el.title = 'The loot can be here';
             }
             if (prob) el.appendChild(prob);
           }
